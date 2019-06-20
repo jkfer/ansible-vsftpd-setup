@@ -1,0 +1,97 @@
+# vim:ft=ansible:
+---
+- hosts: 192.168.0.30
+  user: joseph
+  become: yes
+  become_method: sudo
+  #gather_facts: yes
+  
+  vars_prompt:
+    - name: vsftp_user
+      prompt: Enter username
+      private: no
+
+    - name: vsftp_pass
+      prompt: Enter password
+      private: yes
+
+  tasks:
+    # Install vsftpd
+    - name: Install vsftpd
+      yum: 
+        name: ['epel-release', 'firewalld', 'vsftpd', 'openssl', 'mod_ssl', 'expect', 'ftp']
+        state: latest
+        update_cache: yes
+      notify: Restart firewall service
+
+
+    # Configure /etc/vsftpd/vsftpd.conf file
+    - name: Configure vsftpd.conf file
+      lineinfile:
+        path: /etc/vsftpd/vsftpd.conf
+        state: present
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+      with_items:
+        - { regexp: '^anonymous_enable', line: 'anonymous_enable=NO' }
+        - { regexp: '^local_enable', line: 'local_enable=YES' }
+        - { regexp: '^write_enable', line: 'write_enable=YES' }
+        - { regexp: '^#chroot_local_user=YES', line: 'chroot_local_user=YES' }
+        - { regexp: '^allow_writeable_chroot=YES', line: 'allow_writeable_chroot=YES' }
+        - { regexp: '^#ftpd_banner', line: 'ftpd_banner=---Accessing JKF.LOCAL.FTP---' }
+
+
+    # Add the user to system
+    - name: Add user {{ vsftp_user }}
+      user: 
+        name: "{{ vsftp_user }}"
+        password: "{{ vsftp_pass | password_hash('sha512') }}"
+        shell: "/sbin/nologin"
+        home: "/home/{{ vsftp_user }}"
+        state: present
+
+
+    # Add permission to the user directory - allowing the user to read write to relative home
+    - name: Set user permissions to home directory
+      file:
+        path: "/home/{{ vsftp_user }}"
+        owner: "{{ vsftp_user }}"
+        group: "{{ vsftp_user }}"
+        mode: 0755
+
+
+    # Adding SSL certificate for connection
+    - name: Create the SSL certificate
+      expect:
+        command: openssl req -x509 -nodes -days 3650 -newkey rsa:2048 -keyout /etc/vsftpd/vsftpd.pem -out /etc/vsftpd/vsftpd.pem
+        responses: 
+          'Country Name': 'CA'                       
+          'State or Province Name': 'Ontario'
+          'Locality Name': 'Waterloo'
+          'Organization Name': 'Home'
+          'Organizational Unit': 'Home'
+          'Common Name': 'jkf.local'
+          'Email Address': 'jkf.local@gmail.com'
+      
+
+    - name: Insert SSL settings block text from file
+      blockinfile: 
+        block: "{{ lookup('file', './ssl_settings.txt') }}" 
+        dest: '/etc/vsftpd/vsftpd.conf'
+      notify: Restart vsftpd service
+
+
+    - name: Configuring FTP ports for firewall
+      firewalld: port=20-21/tcp state=enabled permanent=yes
+
+    - name: Adding FTP service to firewall
+      firewalld: service=ftp state=enabled permanent=yes
+      notify: Restart firewall service
+
+
+  handlers:
+    - name: Restart firewall service
+      service: name=firewalld state=restarted enabled=yes
+                                           
+    - name: Restart vsftpd service
+      service: name=vsftpd state=restarted enabled=yes
